@@ -1,0 +1,5 @@
+Get the test_secvm to run the arguments of the test files. It needs to fetch it from the config file.
+update the models file about it
+
+
+python3 test_secsvm.py -D -R HARVEST --organ-depth 500 --secsvm-nepochs 1 --donor-depth 1 --n-features 4000 --secsvm
