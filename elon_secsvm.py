@@ -85,6 +85,14 @@ def main():
     print("detection rate: ",count/total)
     end=time.time()
     print("processing time is ",end-start," seconds")
+    print("out")      
+
+    modified_sample = low_confident_attack(model.X_test, model.clf)
+    if modified_sample is not None:
+        # The attack was successful and modified_sample is the adversarial example
+        print("Successful attack!")
+    else:
+        print("Attack failed")
     exit(0)      
     #tps = np.where((model.y_test & y_pred) == 1)[0]
     #tp_shas = [model.m_test[i]['sha256'] for i in tps]
@@ -198,6 +206,9 @@ def main():
 
     logging.info(yellow('Transplant completed.'))
 
+    
+
+
 
 def transplantation_wrapper(record, model, output_dir, args):
     """Wrapper to handle and debug errors from the problem space transplantation.
@@ -305,6 +316,31 @@ def calculate_base_metrics(model, y_pred, y_scores, output_dir=None):
             'recall': recall,
         }
     }
+
+def low_confident_attack(sample, classifier, max_iterations=100, step_size=0.01):#our try for attack
+    # Set the sample's label to the opposite of the classifier's prediction
+    target_label = 1 - classifier.predict(sample)
+
+    # Initialize the modified sample with the original values
+    modified_sample = sample.copy()
+
+    # Run gradient descent to find the optimal modifications to the sample
+    for _ in range(max_iterations):
+        # Calculate the gradient of the classifier's loss function w.r.t. the sample's features
+        print("target_label",target_label)
+        gradient = classifier.fit(modified_sample, target_label)
+        print("gradient=",gradient)
+        # Take a step in the opposite direction of the gradient
+        modified_sample -= step_size * gradient
+
+        # Check if the classifier is now misclassifying the modified sample
+        confidence = classifier.predict_proba(modified_sample)[0][target_label]
+        if confidence < 0.5:
+            # If the classifier is now less confident in its prediction, return the modified sample
+            return modified_sample
+    
+    # If the maximum number of iterations was reached and the classifier is still confident in its prediction, return None
+    return None
 
 
 def parse_args():
