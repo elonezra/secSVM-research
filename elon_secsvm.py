@@ -15,6 +15,7 @@ import traceback
 import ujson as json
 from itertools import repeat
 from pprint import pformat
+import pickle
 
 import apg.evasion as evasion
 import apg.extraction as extraction
@@ -24,8 +25,16 @@ import apg.utils as utils
 from apg.settings import config
 from apg.utils import blue, yellow, red, green
 
+
+#### imports that i made  ####
+
+from scipy import sparse
+import random
+
+
 mp = torch.multiprocessing.get_context('forkserver')
 
+real_prediction = 0
 
 def main():
     # STAGE 1: PRELUDE #
@@ -47,8 +56,8 @@ def main():
 
     # Load data and create models
     logging.info(blue('Loading data...'))
-
-    if args.secsvm:
+    '''
+    if True:
 
         model = models.SecSVM(config['X_dataset'], config['y_dataset'],config['X_dataset_test'], config['y_dataset_test'],
 			      args.n_features,
@@ -79,135 +88,82 @@ def main():
 
     count=sum(y_pred)
     total=len(y_pred)
-    print(model.y_test)
+    #print("y_test = ",model.y_test)
+    #print("x_test = ",model.X_test)
     #exit(0)
     print("count = ",count, "total = ",total)
     print("detection rate: ",count/total)
     end=time.time()
     print("processing time is ",end-start," seconds")
-    print("out")      
-
-    modified_sample = low_confident_attack(model.X_test, model.clf)
-    if modified_sample is not None:
-        # The attack was successful and modified_sample is the adversarial example
-        print("Successful attack!")
-    else:
-        print("Attack failed")
+    print("out")
+          
+    with open('classifier.pkl', 'wb') as f:
+        pickle.dump(model, f)
+    '''
+    with open('classifier.pkl', 'rb') as f:
+        model = pickle.load(f)
+    print("finished open the file")
+    y_pred = model.clf.predict(model.X_test)
+    count=sum(y_pred)
+    total=len(y_pred)
+    real_prediction = count/total
+    #print("detection rate: ",count/total)
+    add_nois_attack(model.clf, model.X_train, model.X_test)  
     exit(0)      
-    #tps = np.where((model.y_test & y_pred) == 1)[0]
-    #tp_shas = [model.m_test[i]['sha256'] for i in tps]
-    #tp_hosts = [model.m_test[i]['sample_path'] for i in tps]
-    #utils.dump_json(tp_shas, output_dir, 'tp_shas.json')
-    #utils.dump_json(tp_hosts, output_dir, 'tp_hosts.json')
 
-    # Calculate confidence margin
-    benign_scores = y_scores[y_scores < 0]
-    margin = resolve_confidence_level(args.confidence, benign_scores)
-    logging.info(yellow('Using confidence attack w/ margin: {margin} ({args.confidence}%)'))
-
-    # Produce some run statistics
-    report = calculate_base_metrics(model, y_pred, y_scores, output_dir)
-    report['confidence'] = {'confidence': args.confidence, 'margin': margin}
-    report['number_of_apps'] = {'train': len(model.y_train),
-                                'test': len(model.y_test),
-                                'tps': len(tps)}
-
-    logging.info(blue('Performance before attack:\n' + pformat(report)))
-
-    # Log benign features
-    benign_feature_names = [x[0] for x in model.benign_weights]
-    utils.dump_json(benign_feature_names, output_dir, 'benign-features.json')
-
-    start_time = utils.stamp_start_time(output_dir)
-    report['start_time'] = start_time
-
-    # Retry failures from a previous run (some errors are non-deterministic)
-    if args.rerun_past_failures:
-        failed = glob.glob(os.path.join(output_dir, 'failure', '*.txt'))
-        failed = [utils.get_app_name(x) for x in failed]
-        tp_hosts = [utils.resolve_sample_filename(x, config['storage_radix']) for x in failed]
-        logging.warning(red('Rerunning {len(tp_hosts)} failed attempts!'))
-
-    utils.dump_json(report, output_dir, 'run.json', overwrite=False)
-
-    # STAGE 3: FEATURE-SPACE TRANSFORMATIONS (w/ problem-space constraints) #
-
-    # Preload host malware (does more computation upfront to speed up mp)
-
-    if args.preload:
-        logging.info(blue('Commencing preload...'))
-        with mp.Pool(processes=config['nprocs_preload']) as p:
-            p.map(inpatients.Host.load, tp_hosts)
-
-    # Fetch all successfully harvested organs
-
-    #logging.info(blue('Fetching harvested organs...'))
-    #orgs = inpatients.fetch_harvested(benign_feature_names[:args.organ_depth])
-
-    # Feature space evasion (w/ problem space constraints) to generate patient records
-
-    logging.info(blue('Commencing feature space evasion...'))
-
-    if not args.skip_feature_space:
-        if not args.serial:
-            logging.info(blue('Running attack in parallel...'))
-            with mp.Pool(processes=config['nprocs_evasion']) as p:
-                p.starmap(evasion.make_evasive, zip(tp_hosts,
-                                                    repeat(model),
-                                                    repeat(orgs),
-                                                    repeat(margin),
-                                                    repeat(output_dir)))
-
-        if args.serial:
-            logging.info(blue('Running attack in serial...'))
-            for tp in tp_hosts:
-                evasion.make_evasive(tp, model, orgs, margin, output_dir)
-
-        logging.info(yellow('Patient records generated.'))
-        logging.info(blue('Bundling adv features into new dataset...'))
-
-        adv_features = []
-        files = sorted(glob.glob(os.path.join(output_dir, 'adv-features', '*.adv.json')))
-        for filepath in files:
-            with open(filepath, 'rt') as f:
-                adv_features.append(json.load(f))
-        adv_labels = [1] * len(adv_features)
-        adv_meta = [{'sha256': os.path.basename(filepath).split('.')[0]} for filepath in files]
-
-        with open('X.adv.json', 'wt') as f:
-            json.dump(adv_features, f)
-        with open('y.adv.json', 'wt') as f:
-            json.dump(adv_labels, f)
-        with open('meta.adv.json', 'wt') as f:
-            json.dump(adv_meta, f)
-
-    if not args.transplantation:
-        exit()
-
-    # STAGE 4: PROBLEM-SPACE ADVERSARIAL APP GENERATION #
-
-    # Collect all patient records
-    records_dir = os.path.join(output_dir, 'records', '*.record.json')
-    records = glob.glob(records_dir)
-
-    # Problem-space transplantation for end-to-end adv app generation
-    if not args.serial:
-        logging.info(blue('Running transplant in parallel...'))
-        with mp.Pool(processes=config['nprocs_transplant']) as p:
-            p.starmap(transplantation_wrapper, zip(records,
-                                                   repeat(model),
-                                                   repeat(output_dir),
-                                                   repeat(args)))
-
-    if args.serial:
-        logging.info(blue('Running transplant in serial...'))
-        for record in records:
-            transplantation_wrapper(record, model, output_dir, args)
-
-    logging.info(yellow('Transplant completed.'))
-
+def add_nois_attack(model, x_train, x_test):
+    noise_intensity = 0.1
+    X_noisy = x_test 
+    y_pred = model.predict(x_test)
+    count=sum(y_pred)
+    total=len(y_pred)
+    real_prediction = count/total
+    attack_prediction = real_prediction
+    #print()
+    coef = sparse.csr.csr_matrix(model.coef_)
+    X_noisy = X_noisy.multiply(coef)
+   
+    y_pred = model.predict(X_noisy)
+    count=sum(y_pred)
+    total=len(y_pred)
+    attack_prediction = count/total
+    print("attack detection rate: ",attack_prediction)
+    print("real detection rate: ",real_prediction)
+    print("score change, if d > 0 it's good, if d < 0 t's bad")
+    print("delta: ", (real_prediction - attack_prediction))
     
+def add_nois_attack1(model, x_train, x_test):
+    noise_intensity = 0.1
+    X_noisy = x_test 
+    y_pred = model.predict(x_test)
+    count=sum(y_pred)
+    total=len(y_pred)
+    real_prediction = count/total
+    attack_prediction = real_prediction
+# Select the indices of the elements to change randomly
+    while(real_prediction - attack_prediction <= 0.5 ):
+        X_noisy = x_test
+        indices = random.random()
+        print(indices)  # Output: [5, 3]
 
+        # Change the selected elements to the value 1
+       
+        X_noisy = X_noisy * float(indices)
+
+        #X_noisy = X_noisy * 0
+        print("finished transfer")
+        #print(type(X_noisy))
+        #X_noisy = sparse.csr_matrix(X_noisy)
+        #print(type(X_noisy))
+        y_pred = model.predict(X_noisy)
+        count=sum(y_pred)
+        total=len(y_pred)
+        attack_prediction = count/total
+        
+        print("attack detection rate: ",attack_prediction)
+        print("real detection rate: ",real_prediction)
+        print("score change, if d > 0 it's good, if d < 0 t's bad")
+        print("delta: ", (real_prediction - attack_prediction))
 
 
 def transplantation_wrapper(record, model, output_dir, args):
@@ -317,12 +273,16 @@ def calculate_base_metrics(model, y_pred, y_scores, output_dir=None):
         }
     }
 
-def low_confident_attack(sample, classifier, max_iterations=100, step_size=0.01):#our try for attack
+
+    
+'''
+def low_confident_attack(samples, classifier, max_iterations=100, step_size=0.01):#our try for attack
     # Set the sample's label to the opposite of the classifier's prediction
-    target_label = 1 - classifier.predict(sample)
+    #sample = samples.sample(n = samples)
+    target_label = 1 - classifier.predict(samples)
 
     # Initialize the modified sample with the original values
-    modified_sample = sample.copy()
+    modified_sample = samples.copy()
 
     # Run gradient descent to find the optimal modifications to the sample
     for _ in range(max_iterations):
@@ -341,6 +301,7 @@ def low_confident_attack(sample, classifier, max_iterations=100, step_size=0.01)
     
     # If the maximum number of iterations was reached and the classifier is still confident in its prediction, return None
     return None
+'''
 
 
 def parse_args():
