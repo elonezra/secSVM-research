@@ -33,20 +33,14 @@ def evaluate_metrics(y_pred,labels):
 # (1) Binary search method for c, (2) Optimization on tanh space, (3) Choosing method best l2 adversaries is NOT IN THIS CODE.
 def cw_l2_attack(clf, images, labels, targeted=False, c=1e-4, kappa=0, max_iter=1000, learning_rate=0.01) :
 
-    #images = images.toarray()  # convert the sparse matrix to a dense numpy array
-    train_loader = torch.utils.data.DataLoader(images, batch_size=32, shuffle=False)
-    #images = torch.from_numpy(images)
-    #labels = labels.toarray()  # convert the sparse matrix to a dense numpy array
+    images = images.toarray()  # convert the sparse matrix to a dense numpy array
     labels = torch.from_numpy(labels)
     labels = labels.to(device)
     labels = labels.reshape(-1)
 
-
-    
     # Define f-function
     def f(x) :
-        outputs = clf.model(x).to(device)
-
+        outputs = clf.model(x)
         one_hot_labels = torch.eye(len(outputs))[labels].to(device)
         i, _ = torch.max((1-one_hot_labels)*outputs, dim=1)
         j = torch.masked_select(outputs, one_hot_labels.bool())
@@ -58,46 +52,40 @@ def cw_l2_attack(clf, images, labels, targeted=False, c=1e-4, kappa=0, max_iter=
         # If untargeted, optimize for making the other class most likely 
         else :
             return torch.clamp(j-i, min=-kappa)
-    
-    s = images.shape
-    w = torch.zeros(s)
+        
 
-
-    optimizer = optim.Adam([w], lr=learning_rate)
 
     prev = 1e10
     float_tensor_cons = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
-    x = float_tensor_cons(train_loader)
+    x = float_tensor_cons(images)
+    w = torch.zeros_like(x, requires_grad=True).to(device)
+    # s = images.shape
+    # w = torch.zeros(s)
+
+    optimizer = optim.Adam([w], lr=learning_rate)
     output = clf.model(x).to(device)
     
-    for images, labels in train_loader:
-        images = images.float()
-        labels = labels.float()
-        images = images.to(device)
-        labels = labels.to(device)
+    for step in range(max_iter) :
+        
+        a = 1/2*(torch.tanh(w) + 1)
+        loss1 = nn.MSELoss(reduction='sum')(a, x)
+        loss2 = torch.sum(c*f(a))
+        cost = loss1 + loss2
+        optimizer.zero_grad(set_to_none=True)
+        cost.backward(retain_graph=True)
+        optimizer.step()
 
-        for step in range(max_iter) :
-            
-            a = 1/2*(torch.tanh(w) + 1)
-            loss1 = nn.MSELoss(reduction='sum')(a, output)
-            cprint("loss2","yellow")
-            loss2 = torch.sum(c*f(a))
-            cost = loss1 + loss2
-            optimizer.zero_grad()
-            cost.backward(retain_graph=True)
-            optimizer.step()
-
-            # Early Stop when loss does not converge.
-            if step % (max_iter//10) == 0 :
-                if cost > prev :
-                    print('Attack Stopped due to CONVERGENCE....')
-                    return a
-                prev = cost
-            
-            print('- Learning Progress : %2.2f %%        ' %((step+1)/max_iter*100), end='\r')
+        # Early Stop when loss does not converge.
+        if step % (max_iter//10) == 0 :
+            if cost > prev :
+                print('Attack Stopped due to CONVERGENCE....')
+                return a
+            prev = cost
+        
+        print('- Learning Progress : %2.2f %%        ' %((step+1)/max_iter*100), end='\r')
 
     attack_images = 1/2*(nn.Tanh()(w) + 1)
-
+    
     return attack_images
 
 
@@ -140,24 +128,30 @@ def main():
         model = pickle.load(f)
     print("finished open the file")
     
-    dim_bound = 1000
+    #1219
+    dim_bound = 10
     #y_pred = model.clf.predict(model.X_test)
     #evaluate_metrics(y_pred,model.X_test, model.y_test)
     
     #print("SNA")
     #pred_san = add_nois_attack(model.clf,model.X_test)
     #evaluate_metrics(pred_san,model.X_test, model.y_test)
-
-
-    attacked_image = cw_l2_attack(model.clf,model.X_test[:dim_bound],model.y_test[:dim_bound],max_iter=10)
-    attacked_image = sparse.csr_matrix(attacked_image,shape=attacked_image.shape)
-    cprint(type(attacked_image),"green")
+    #img = torch.empty((0,model.X_test.shape[1]), dtype=torch.int64)
+    attacked_image = None#sparse.csr_matrix(img,shape=img.shape)
+    for i in range(0,901,53):
+        print(i,")\n")
+        temp = cw_l2_attack(model.clf,model.X_test[i:i+52],model.y_test[i:i+52],max_iter=10)
+        #cprint(type(temp),"blue")
+        attacked_image = sparse.vstack((attacked_image,sparse.csr_matrix(temp.detach().numpy(),shape=temp.shape)))
+        #print("\n",attacked_image.shape[0],",",attacked_image.shape[1],"\n")
+    #attacked_image = sparse.csr_matrix(attacked_image,shape=attacked_image.shape)
+    
     
     y_pred = model.clf.predict(attacked_image)
     cprint(attacked_image.shape[0],"red")
     cprint(len(y_pred),"red")
     cprint("finshed prediction","blue")
-    evaluate_metrics(y_pred, model.y_test[:dim_bound])
+    evaluate_metrics(y_pred, model.y_test[:len(y_pred)])
 
 if __name__ == "__main__":
     main()
