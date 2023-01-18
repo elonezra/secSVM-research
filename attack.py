@@ -9,7 +9,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from termcolor import cprint
 from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score
-import foolbox as fb
+import gc
 
 
 
@@ -19,7 +19,7 @@ def evaluate_metrics(y_pred,labels):
     # calculate evaluation metrics with sklearn
     accuracy = accuracy_score(labels, y_pred)
     recall = recall_score(labels, y_pred)
-    precision = precision_score(labels, y_pred)
+    precision = precision_score(labels, y_pred,zero_division=1)
     f1 = f1_score(labels, y_pred)
     # print evaluation metrics
     print("Accuracy:", accuracy)
@@ -35,8 +35,8 @@ def cw_l2_attack(clf, images, labels, targeted=False, c=1e-4, kappa=0, max_iter=
 
     images = images.toarray()  # convert the sparse matrix to a dense numpy array
     labels = torch.from_numpy(labels)
-    labels = labels.to(device)
-    labels = labels.reshape(-1)
+    labels = labels.to(device).reshape(-1)
+    
 
     # Define f-function
     def f(x) :
@@ -63,11 +63,12 @@ def cw_l2_attack(clf, images, labels, targeted=False, c=1e-4, kappa=0, max_iter=
     # w = torch.zeros(s)
 
     optimizer = optim.Adam([w], lr=learning_rate)
-    output = clf.model(x).to(device)
     
     for step in range(max_iter) :
         
         a = 1/2*(torch.tanh(w) + 1)
+        #loss1 = torch.mm(clf.model.fc.weight, torch.t(clf.model.fc.weight)) / 2.0  # l2 penalty
+
         loss1 = nn.MSELoss(reduction='sum')(a, x)
         loss2 = torch.sum(c*f(a))
         cost = loss1 + loss2
@@ -76,7 +77,7 @@ def cw_l2_attack(clf, images, labels, targeted=False, c=1e-4, kappa=0, max_iter=
         optimizer.step()
 
         # Early Stop when loss does not converge.
-        if step % (max_iter//10) == 0 :
+        if step % (max_iter//5) == 0 :
             if cost > prev :
                 print('Attack Stopped due to CONVERGENCE....')
                 return a
@@ -85,8 +86,8 @@ def cw_l2_attack(clf, images, labels, targeted=False, c=1e-4, kappa=0, max_iter=
         print('- Learning Progress : %2.2f %%        ' %((step+1)/max_iter*100), end='\r')
 
     attack_images = 1/2*(nn.Tanh()(w) + 1)
-    
-    return attack_images
+   
+    return  sparse.csr_matrix(attack_images.detach().numpy())
 
 
 
@@ -138,16 +139,20 @@ def main():
     #evaluate_metrics(pred_san,model.X_test, model.y_test)
     #img = torch.empty((0,model.X_test.shape[1]), dtype=torch.int64)
     attacked_image = None#sparse.csr_matrix(img,shape=img.shape)
-    for i in range(0,901,53):
+    for i in range(0,848,53):
         print(i,")\n")
-        temp = cw_l2_attack(model.clf,model.X_test[i:i+52],model.y_test[i:i+52],max_iter=10)
+        temp = cw_l2_attack(model.clf,model.X_test[i:i+52],model.y_test[i:i+52],max_iter=8)
         #cprint(type(temp),"blue")
-        attacked_image = sparse.vstack((attacked_image,sparse.csr_matrix(temp.detach().numpy(),shape=temp.shape)))
+        attacked_image = sparse.vstack((attacked_image,temp))
+        del temp
+        gc.collect()
+
         #print("\n",attacked_image.shape[0],",",attacked_image.shape[1],"\n")
     #attacked_image = sparse.csr_matrix(attacked_image,shape=attacked_image.shape)
-    
+   
     
     y_pred = model.clf.predict(attacked_image)
+    print(attacked_image)
     cprint(attacked_image.shape[0],"red")
     cprint(len(y_pred),"red")
     cprint("finshed prediction","blue")
