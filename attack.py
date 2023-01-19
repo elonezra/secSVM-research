@@ -10,6 +10,7 @@ from tqdm import tqdm
 from termcolor import cprint
 from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score
 import gc
+import pandas as pd
 
 
 
@@ -21,6 +22,12 @@ def evaluate_metrics(y_pred,labels):
     recall = recall_score(labels, y_pred)
     precision = precision_score(labels, y_pred,zero_division=1)
     f1 = f1_score(labels, y_pred)
+    with open('C&W_score.txt', 'w') as f:
+        f.write("Accuracy:" + str(accuracy))
+        f.write("\nRecall:"+ str(recall))
+        f.write("\nPrecision:"+ str(precision))
+        f.write("\nF1 score:"+ str(f1))
+    f.close()
     # print evaluation metrics
     print("Accuracy:", accuracy)
     print("Recall:", recall)
@@ -31,7 +38,7 @@ def evaluate_metrics(y_pred,labels):
 # CW-L2 Attack
 # Based on the paper, i.e. not exact same version of the code on https://github.com/carlini/nn_robust_attacks
 # (1) Binary search method for c, (2) Optimization on tanh space, (3) Choosing method best l2 adversaries is NOT IN THIS CODE.
-def cw_l2_attack(clf, images, labels, targeted=False, c=1e-4, kappa=0, max_iter=1000, learning_rate=0.01) :
+def cw_l2_attack(clf, images, labels, targeted=True, c=1e-4, kappa=0, max_iter=1000, learning_rate=0.01) :
 
     images = images.toarray()  # convert the sparse matrix to a dense numpy array
     labels = torch.from_numpy(labels)
@@ -63,7 +70,6 @@ def cw_l2_attack(clf, images, labels, targeted=False, c=1e-4, kappa=0, max_iter=
     # w = torch.zeros(s)
 
     optimizer = optim.Adam([w], lr=learning_rate)
-    
     for step in range(max_iter) :
         
         a = 1/2*(torch.tanh(w) + 1)
@@ -77,16 +83,15 @@ def cw_l2_attack(clf, images, labels, targeted=False, c=1e-4, kappa=0, max_iter=
         optimizer.step()
 
         # Early Stop when loss does not converge.
-        if step % (max_iter//5) == 0 :
+        if step % (max_iter//10) == 0 :
             if cost > prev :
                 print('Attack Stopped due to CONVERGENCE....')
                 return a
             prev = cost
-        
         print('- Learning Progress : %2.2f %%        ' %((step+1)/max_iter*100), end='\r')
-
+    
     attack_images = 1/2*(nn.Tanh()(w) + 1)
-   
+    #attack_images = cost
     return  sparse.csr_matrix(attack_images.detach().numpy())
 
 
@@ -141,7 +146,7 @@ def main():
     attacked_image = None#sparse.csr_matrix(img,shape=img.shape)
     for i in range(0,848,53):
         print(i,")\n")
-        temp = cw_l2_attack(model.clf,model.X_test[i:i+52],model.y_test[i:i+52],max_iter=8)
+        temp = cw_l2_attack(model.clf,model.X_test[i:i+52],model.y_test[i:i+52],max_iter=1000)
         #cprint(type(temp),"blue")
         attacked_image = sparse.vstack((attacked_image,temp))
         del temp
@@ -150,13 +155,15 @@ def main():
         #print("\n",attacked_image.shape[0],",",attacked_image.shape[1],"\n")
     #attacked_image = sparse.csr_matrix(attacked_image,shape=attacked_image.shape)
    
-    
+
     y_pred = model.clf.predict(attacked_image)
-    print(attacked_image)
-    cprint(attacked_image.shape[0],"red")
-    cprint(len(y_pred),"red")
+    #print(attacked_image)
     cprint("finshed prediction","blue")
     evaluate_metrics(y_pred, model.y_test[:len(y_pred)])
+    
+    t_np = attacked_image.todense() #convert to Numpy array
+    df = pd.DataFrame(t_np) #convert to a dataframe
+    df.to_csv("CW_featuer_set",index=False) #save to file
 
 if __name__ == "__main__":
     main()
